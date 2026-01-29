@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import * as cheerio from "cheerio";
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   AnalyzeRequest,
@@ -18,172 +17,104 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Scrape a seller's hockey stick listings from SidelineSwap
-async function scrapeSellerListings(username: string): Promise<ListingData[]> {
+// SidelineSwap API response types
+interface SidelineSwapItem {
+  id: number;
+  state: string;
+  name: string;
+  category_1: string;
+  category_2: string;
+  price: number;
+  url: string;
+  primary_image?: {
+    large_url: string;
+    edge_url: string;
+  };
+  images?: Array<{
+    large_url: string;
+  }>;
+  seller: {
+    id: number;
+    username: string;
+  };
+  condition_detail?: {
+    name: string;
+  };
+}
+
+interface SidelineSwapResponse {
+  data: SidelineSwapItem[];
+  meta: {
+    total_count: number;
+    page: number;
+    has_next_page: boolean;
+  };
+}
+
+// Fetch seller's hockey stick listings using SidelineSwap API
+async function fetchSellerListings(username: string): Promise<ListingData[]> {
   const listings: ListingData[] = [];
-  const url = `https://sidelineswap.com/shop/${username}`;
 
   try {
-    const response = await fetch(url, {
+    // Use the SidelineSwap API with seller filter
+    const apiUrl = `https://api.sidelineswap.com/v1/items?seller=${encodeURIComponent(username)}`;
+
+    const response = await fetch(apiUrl, {
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        Accept: "application/json",
       },
     });
 
     if (!response.ok) {
-      console.error(`Failed to fetch ${url}: ${response.status}`);
+      console.error(`API request failed for ${username}: ${response.status}`);
       return listings;
     }
 
-    const html = await response.text();
-    const $ = cheerio.load(html);
+    const data: SidelineSwapResponse = await response.json();
 
-    // Find all product cards/listings on the page
-    // SidelineSwap uses various selectors - try common patterns
-    const productSelectors = [
-      '[data-testid="product-card"]',
-      ".product-card",
-      ".listing-card",
-      '[class*="ProductCard"]',
-      '[class*="listing"]',
-      'a[href*="/gear/"]',
-    ];
+    if (!data.data || data.data.length === 0) {
+      console.log(`No items found for seller: ${username}`);
+      return listings;
+    }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let productElements: cheerio.Cheerio<any> | null = null;
+    // Filter for hockey sticks only
+    for (const item of data.data) {
+      // Check if it's a hockey stick by category or name
+      const isHockeyStick =
+        (item.category_1 === "hockey" && item.category_2 === "sticks") ||
+        /hockey.*stick|stick.*hockey/i.test(item.name) ||
+        /bauer|ccm|warrior|true|sherwood|easton|pro\s*blackout/i.test(item.name);
 
-    for (const selector of productSelectors) {
-      const elements = $(selector);
-      if (elements.length > 0) {
-        productElements = elements;
-        break;
+      if (!isHockeyStick) continue;
+
+      // Get image URLs
+      const imageUrls: string[] = [];
+      if (item.primary_image?.edge_url) {
+        imageUrls.push(item.primary_image.edge_url);
+      } else if (item.primary_image?.large_url) {
+        imageUrls.push(item.primary_image.large_url);
       }
-    }
 
-    // If we can't find product cards, try to parse the page structure
-    if (!productElements || productElements.length === 0) {
-      // Look for links that point to gear pages
-      $('a[href*="/gear/"]').each((_, element) => {
-        const $el = $(element);
-        const href = $el.attr("href") || "";
-
-        // Extract item ID from URL (e.g., /gear/12345-hockey-stick)
-        const itemIdMatch = href.match(/\/gear\/(\d+)/);
-        if (!itemIdMatch) return;
-
-        const itemId = itemIdMatch[1];
-
-        // Check if this is a hockey stick listing by looking at the text/title
-        const title =
-          $el.find("img").attr("alt") ||
-          $el.text().trim() ||
-          $el.attr("title") ||
-          "";
-
-        const isHockeyStick =
-          /hockey|stick|bauer|ccm|warrior|true|sherwood|easton/i.test(title);
-        if (!isHockeyStick) return;
-
-        // Get price - look in various places
-        const priceText =
-          $el.find('[class*="price"]').text() ||
-          $el.parent().find('[class*="price"]').text() ||
-          "";
-        const price = priceText.match(/\$[\d,.]+/)?.[0] || "Unknown";
-
-        // Get image URL
-        const imgSrc =
-          $el.find("img").attr("src") ||
-          $el.find("img").attr("data-src") ||
-          "";
-
-        // Build the full URL
-        const fullUrl = href.startsWith("http")
-          ? href
-          : `https://sidelineswap.com${href}`;
-
-        // Avoid duplicates
-        if (listings.some((l) => l.itemId === itemId)) return;
-
-        listings.push({
-          itemId,
-          url: fullUrl,
-          title: title.substring(0, 200),
-          price,
-          description: "", // Will need to fetch from item page for full description
-          imageUrls: imgSrc ? [imgSrc] : [],
-          sellerUsername: username,
-        });
-      });
-    } else {
-      // Parse product cards
-      productElements.each((_, element) => {
-        const $el = $(element);
-
-        // Get the link and item ID
-        const link = $el.find("a").first().attr("href") || $el.attr("href") || "";
-        const itemIdMatch = link.match(/\/gear\/(\d+)/);
-        if (!itemIdMatch) return;
-
-        const itemId = itemIdMatch[1];
-        const fullUrl = link.startsWith("http")
-          ? link
-          : `https://sidelineswap.com${link}`;
-
-        // Get title
-        const title =
-          $el.find('[class*="title"]').text().trim() ||
-          $el.find("h2, h3, h4").text().trim() ||
-          $el.find("img").attr("alt") ||
-          "";
-
-        // Filter for hockey sticks
-        const isHockeyStick =
-          /hockey|stick|bauer|ccm|warrior|true|sherwood|easton/i.test(title);
-        if (!isHockeyStick) return;
-
-        // Get price
-        const priceText = $el.find('[class*="price"]').text();
-        const price = priceText.match(/\$[\d,.]+/)?.[0] || "Unknown";
-
-        // Get images
-        const imageUrls: string[] = [];
-        $el.find("img").each((_, img) => {
-          const src = $(img).attr("src") || $(img).attr("data-src");
-          if (src && !src.includes("placeholder")) {
-            imageUrls.push(src);
-          }
-        });
-
-        // Get description if available
-        const description = $el.find('[class*="description"]').text().trim();
-
-        listings.push({
-          itemId,
-          url: fullUrl,
-          title: title.substring(0, 200),
-          price,
-          description,
-          imageUrls,
-          sellerUsername: username,
-        });
+      listings.push({
+        itemId: String(item.id),
+        url: item.url,
+        title: item.name,
+        price: `$${item.price.toFixed(2)}`,
+        description: item.condition_detail?.name || "",
+        imageUrls,
+        sellerUsername: item.seller.username,
       });
     }
 
-    // If we found listings, try to fetch more details for the first few
-    // (limit to avoid too many requests)
+    // Fetch additional details for each listing (to get more images and description)
     const detailedListings: ListingData[] = [];
-    for (let i = 0; i < Math.min(listings.length, 10); i++) {
+    for (let i = 0; i < Math.min(listings.length, 15); i++) {
       const listing = listings[i];
-
       try {
-        await delay(1000); // Rate limiting
-        const detailedListing = await fetchListingDetails(listing);
-        detailedListings.push(detailedListing);
+        await delay(500); // Rate limiting
+        const detailed = await fetchItemDetails(listing);
+        detailedListings.push(detailed);
       } catch {
         detailedListings.push(listing);
       }
@@ -191,65 +122,52 @@ async function scrapeSellerListings(username: string): Promise<ListingData[]> {
 
     return detailedListings.length > 0 ? detailedListings : listings;
   } catch (error) {
-    console.error(`Error scraping ${username}:`, error);
+    console.error(`Error fetching listings for ${username}:`, error);
     return listings;
   }
 }
 
-// Fetch detailed information for a single listing
-async function fetchListingDetails(listing: ListingData): Promise<ListingData> {
+// Fetch detailed item information from API
+async function fetchItemDetails(listing: ListingData): Promise<ListingData> {
   try {
-    const response = await fetch(listing.url, {
+    const apiUrl = `https://api.sidelineswap.com/v1/items/${listing.itemId}`;
+
+    const response = await fetch(apiUrl, {
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        Accept: "application/json",
       },
     });
 
     if (!response.ok) return listing;
 
-    const html = await response.text();
-    const $ = cheerio.load(html);
+    const data = await response.json();
+    const item = data.data;
 
-    // Get description
-    const description =
-      $('[class*="description"]').text().trim() ||
-      $('[data-testid="description"]').text().trim() ||
-      $('meta[name="description"]').attr("content") ||
-      listing.description;
+    if (!item) return listing;
 
-    // Get all images
+    // Get all image URLs
     const imageUrls: string[] = [];
-    $('img[src*="sidelineswap"], img[src*="cloudinary"]').each((_, img) => {
-      const src = $(img).attr("src");
-      if (src && !src.includes("placeholder") && !src.includes("avatar")) {
-        // Get higher resolution version if possible
-        const highResSrc = src.replace(/w_\d+/, "w_800").replace(/h_\d+/, "h_800");
-        if (!imageUrls.includes(highResSrc)) {
-          imageUrls.push(highResSrc);
+    if (item.images && Array.isArray(item.images)) {
+      for (const img of item.images) {
+        if (img.edge_url) {
+          imageUrls.push(img.edge_url);
+        } else if (img.large_url) {
+          imageUrls.push(img.large_url);
         }
       }
-    });
-
-    // Get price if not already set
-    let price = listing.price;
-    if (price === "Unknown") {
-      const priceText =
-        $('[class*="price"]').first().text() ||
-        $('[data-testid="price"]').text();
-      price = priceText.match(/\$[\d,.]+/)?.[0] || "Unknown";
     }
+
+    // Get description
+    const description = item.description || item.condition_detail?.name || "";
 
     return {
       ...listing,
       description: description.substring(0, 1000),
       imageUrls: imageUrls.length > 0 ? imageUrls : listing.imageUrls,
-      price,
     };
   } catch (error) {
-    console.error(`Error fetching details for ${listing.itemId}:`, error);
+    console.error(`Error fetching details for item ${listing.itemId}:`, error);
     return listing;
   }
 }
@@ -407,23 +325,23 @@ export async function POST(request: NextRequest): Promise<NextResponse<AnalyzeRe
       const cleanUsername = username.trim();
       if (!cleanUsername) continue;
 
-      console.log(`Scraping listings for seller: ${cleanUsername}`);
+      console.log(`Fetching listings for seller: ${cleanUsername}`);
 
-      // Scrape listings
-      const listings = await scrapeSellerListings(cleanUsername);
+      // Fetch listings via API
+      const listings = await fetchSellerListings(cleanUsername);
 
       if (listings.length === 0) {
         errors.push(`No hockey stick listings found for seller: ${cleanUsername}`);
         continue;
       }
 
-      console.log(`Found ${listings.length} listings for ${cleanUsername}`);
+      console.log(`Found ${listings.length} hockey stick listings for ${cleanUsername}`);
 
       // Analyze each listing
       for (const listing of listings) {
         await delay(1000); // Rate limiting between API calls
 
-        console.log(`Analyzing listing: ${listing.itemId}`);
+        console.log(`Analyzing listing: ${listing.itemId} - ${listing.title}`);
 
         const analysis = await analyzeListingWithClaude(listing);
 
