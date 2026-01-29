@@ -32,6 +32,7 @@ interface SidelineSwapItem {
   };
   images?: Array<{
     large_url: string;
+    edge_url?: string;
   }>;
   seller: {
     id: number;
@@ -42,22 +43,61 @@ interface SidelineSwapItem {
   };
 }
 
-interface SidelineSwapResponse {
+interface SidelineSwapV2Response {
   data: SidelineSwapItem[];
   meta: {
-    total_count: number;
-    page: number;
-    has_next_page: boolean;
+    paging: {
+      total_count: number;
+      total_pages: number;
+      page: number;
+      page_size: number;
+      has_next_page: boolean;
+    };
   };
 }
 
-// Fetch seller's hockey stick listings using SidelineSwap API
+// Build URL with bracket notation for array parameters
+function buildFacetItemsUrl(params: {
+  seller?: string[];
+  category?: string[];
+  brand?: string[];
+}): string {
+  const baseUrl = "https://api.sidelineswap.com/v2/facet_items";
+  const searchParams = new URLSearchParams();
+
+  // Add array parameters with bracket notation
+  if (params.seller) {
+    for (const s of params.seller) {
+      searchParams.append("seller[]", s);
+    }
+  }
+  if (params.category) {
+    for (const c of params.category) {
+      searchParams.append("category[]", c);
+    }
+  }
+  if (params.brand) {
+    for (const b of params.brand) {
+      searchParams.append("brand[]", b);
+    }
+  }
+
+  return `${baseUrl}?${searchParams.toString()}`;
+}
+
+// Fetch seller's hockey stick listings using SidelineSwap v2 facet_items API
 async function fetchSellerListings(username: string): Promise<ListingData[]> {
   const listings: ListingData[] = [];
 
   try {
-    // Use the SidelineSwap API with seller filter
-    const apiUrl = `https://api.sidelineswap.com/v1/items?seller=${encodeURIComponent(username)}`;
+    // Use the v2 facet_items API with bracket notation for arrays
+    // Filter by seller and hockey/sticks category
+    const apiUrl = buildFacetItemsUrl({
+      seller: [username],
+      category: ["hockey", "sticks"],
+    });
+
+    console.log(`Fetching from: ${apiUrl}`);
 
     const response = await fetch(apiUrl, {
       headers: {
@@ -71,23 +111,17 @@ async function fetchSellerListings(username: string): Promise<ListingData[]> {
       return listings;
     }
 
-    const data: SidelineSwapResponse = await response.json();
+    const data: SidelineSwapV2Response = await response.json();
 
     if (!data.data || data.data.length === 0) {
       console.log(`No items found for seller: ${username}`);
       return listings;
     }
 
-    // Filter for hockey sticks only
+    console.log(`API returned ${data.data.length} items (total: ${data.meta.paging.total_count})`);
+
+    // Process all items (already filtered by category via API)
     for (const item of data.data) {
-      // Check if it's a hockey stick by category or name
-      const isHockeyStick =
-        (item.category_1 === "hockey" && item.category_2 === "sticks") ||
-        /hockey.*stick|stick.*hockey/i.test(item.name) ||
-        /bauer|ccm|warrior|true|sherwood|easton|pro\s*blackout/i.test(item.name);
-
-      if (!isHockeyStick) continue;
-
       // Get image URLs
       const imageUrls: string[] = [];
       if (item.primary_image?.edge_url) {
