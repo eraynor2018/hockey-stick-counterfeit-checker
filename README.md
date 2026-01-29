@@ -15,7 +15,7 @@ A Next.js application that analyzes SidelineSwap listings for potential counterf
 
 1. Enter SidelineSwap seller usernames
 2. The app scrapes their hockey stick listings
-3. Each listing is analyzed by Claude (claude-sonnet-4-20250514) for:
+3. Each listing is analyzed by Claude (claude-sonnet-4-5) for:
    - Price vs market value comparison
    - Image authenticity (stock photos vs real product)
    - Logo/branding quality
