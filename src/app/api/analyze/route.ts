@@ -56,11 +56,14 @@ interface SidelineSwapV2Response {
   };
 }
 
+// Hockey sticks category ID
+const HOCKEY_STICKS_CATEGORY_ID = 110023;
+
 // Build URL with bracket notation for array parameters
 function buildFacetItemsUrl(params: {
   seller?: string[];
-  category?: string[];
-  brand?: string[];
+  category?: number[];
+  brand?: number[];
 }): string {
   const baseUrl = "https://api.sidelineswap.com/v2/facet_items";
   const searchParams = new URLSearchParams();
@@ -73,12 +76,12 @@ function buildFacetItemsUrl(params: {
   }
   if (params.category) {
     for (const c of params.category) {
-      searchParams.append("category[]", c);
+      searchParams.append("category[]", String(c));
     }
   }
   if (params.brand) {
     for (const b of params.brand) {
-      searchParams.append("brand[]", b);
+      searchParams.append("brand[]", String(b));
     }
   }
 
@@ -91,10 +94,10 @@ async function fetchSellerListings(username: string): Promise<ListingData[]> {
 
   try {
     // Use the v2 facet_items API with bracket notation for arrays
-    // Filter by seller and hockey/sticks category
+    // Filter by seller and hockey sticks category (ID: 110023)
     const apiUrl = buildFacetItemsUrl({
       seller: [username],
-      category: ["hockey", "sticks"],
+      category: [HOCKEY_STICKS_CATEGORY_ID],
     });
 
     console.log(`Fetching from: ${apiUrl}`);
