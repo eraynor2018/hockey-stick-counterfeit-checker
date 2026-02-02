@@ -195,6 +195,9 @@ async function fetchItemDetails(listing: ListingData): Promise<ListingData> {
       }
     }
 
+    // Sort image URLs to ensure deterministic ordering across API calls
+    imageUrls.sort();
+
     // Get description
     const description = item.description || item.condition_detail?.name || "";
 
